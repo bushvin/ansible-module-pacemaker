@@ -1,0 +1,128 @@
+#!/usr/bin/python
+
+DOCUMENTATION = '''
+---
+author: "William Leemans <willie@elaba.net>"
+module: corosync_cmapctl
+short_description: "wrapper module for corosync-cmapctl"
+description:
+  - "module for managing the corosync configuration"
+version_added: "2.4"
+options:
+  key:
+    description:
+      - The name of the corosync key name
+    required: true
+  recursive:
+    description:
+      - Remove all keys with the prefix specified in key
+    required: false
+    default: false
+  value:
+    description:
+      - the new value for the specified key
+    required: false
+  path:
+    description:
+      - load settings from a config file instead of the default corosync config
+    required: false
+  state:
+    description:
+      - "'present' - ensure the value is set"
+      - "'absent' - remove the key (and possibly subkeys as well)
+    required: false
+    default: false
+
+'''
+
+EXAMPLES = '''
+- corosync_cmapctl:
+    key: totem.token
+    value: 20000
+
+- corosync_cmapctl:
+    key: totem.interface.0
+    recursive: yes
+    state: absent
+'''
+
+import os.path
+import re
+from distutils.spawn import find_executable
+
+def main():
+    module = AnsibleModule(
+        argument_spec = dict(
+            key       = dict(required = True, type = 'str', default = None),
+            recursive = dict(required = False, type = 'bool', default = False),
+            value     = dict(required = False, type = 'str', default = None),
+            path      = dict(required = False, type = 'str', default = None),
+            state     = dict(required = False, type = 'str', default = 'present', choices = [ 'present', 'absent' ])
+        ),
+        supports_check_mode = True
+    )
+
+    key       = module.params['key']
+    recursive = module.params['recursive']
+    value     = module.params['value']
+    path      = module.params['path']
+    state     = module.params['state']
+
+    cmd_get_args = ['corosync-cmapctl']
+    cmd_set_args = ['corosync-cmapctl']
+    cmd_del_args = ['corosync-cmapctl']
+    result = dict( changed = False )
+
+    if find_executable('corosync-cmapctl') is None:
+        module.fail_json( msg = "'corosync-cmapctl' executable not found. Install 'corosync'." )
+
+    if path is not None and not os.path.isfile(path):
+        module.fail_json( msg = '%s is not a file' % path )
+    elif path is not None:
+        cmd_get_args.append('-p %s' % path)
+        cmd_set_args.append('-p %s' % path)
+        cmd_del_args.append('-p %s' % path)
+
+    if key is None:
+       module.fail_json( msg = 'You need to specify a key' )
+    else:
+       cmd_get_args.append('-g %s' % key)
+       cmd_set_args.append('-s %s' % key)
+       if recursive:
+          cmd_del_args.append('-D %s' % key)
+       else:
+          cmd_del_args.append('-d %s' % key)
+
+    if state == 'present':
+        get_rc, get_out, get_err = module.run_command( " ".join(cmd_get_args) )
+        if value is None:
+            module.fail_json( msg = "You need to specify a new key value" )
+
+        if get_out.partition("=")[2].strip() != value:
+            result['changed'] = True
+
+        if not module.check_mode:
+            rc, out, err = module.run_command(" ".join(cmd_set_args) )
+            if err != "":
+                module.fail_json( msg = "An error ocurred changing the value %s" % err )
+
+    else:
+        rc, out, err = module.run_command('corosync-cmapctl')
+        for line in out.split('\n'):
+           if recursive and re.match('^%s\.' % key) is not None:
+              result['changed'] = True
+           elif not recursive and re.match('^%s\s' % key) is not None:
+              result['changed'] = True
+
+        if not module.check_mode:
+            rc, out, err = module.run_command(" ".join(cmd_set_args) )
+            if err != "":
+                module.fail_json( msg = "An error ocurred deleting the key %s" % err )
+
+    module.exit_json(**result)
+
+
+# import module snippets
+from ansible.module_utils.basic import *
+main()
+
